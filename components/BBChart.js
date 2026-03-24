@@ -1,93 +1,85 @@
-// components/BBChart.js - 이중 볼린저밴드 시각화
+import { useMemo } from 'react';
 
-export default function BBChart({ 종목 }) {
-  const { 현재가, bb } = 종목;
-  if (!bb) return null;
+function makeSeries(stock) {
+  const candles = stock?.candles || [];
+  if (!candles.length) return [];
 
-  const 범위 = bb.bb1상단 - bb.bb1하단;
-  if (범위 <= 0) return null;
+  const closes = candles.map((c) => c.close);
+  const rows = [];
 
-  const 위치 = v =>
-    `${Math.max(1, Math.min(99, ((v - bb.bb1하단) / 범위) * 100)).toFixed(1)}%`;
+  function avg(values) {
+    return values.reduce((sum, v) => sum + v, 0) / values.length;
+  }
 
-  const 구간목록 = [
-    { 명칭:"BB1 상단 돌파",  설명:"가격 > BB1 상단",     색:"#cc0000", 참고:"과매수 주의" },
-    { 명칭:"★ 매수 구간",   설명:"BB2상단 ~ BB1상단",  색:"#007700", 참고:"진입 적합!" },
-    { 명칭:"중립 (이평 위)", 설명:"이평선 ~ BB2상단",   색:"#886600", 참고:"관망" },
-    { 명칭:"중립 (이평 아래)",설명:"BB2하단 ~ 이평선",  색:"#995500", 참고:"조정" },
-    { 명칭:"BB 매도 구간",  설명:"BB1하단 ~ BB2하단",   색:"#cc3300", 참고:"반등 대기" },
-    {
-      명칭: `밴드폭 ${bb.밴드폭}%`,
-      설명: bb.밴드폭 <= 6 ? "수축! 매집 직전" : bb.밴드폭 <= 10 ? "좁아짐" : "정상",
-      색:   bb.밴드폭 <= 6 ? "#cc0000" : "#005599",
-      참고: bb.밴드폭 <= 6 ? "🚨 주목" : "",
-    },
-  ];
+  function deviation(values, mean) {
+    return Math.sqrt(values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / values.length);
+  }
+
+  for (let i = 0; i < candles.length; i += 1) {
+    const start = Math.max(0, i - 19);
+    const slice = closes.slice(start, i + 1);
+    const ma = slice.length >= 5 ? avg(slice) : null;
+    const sd = ma != null ? deviation(slice, ma) : null;
+    rows.push({
+      index: i,
+      close: candles[i].close,
+      ma20: ma,
+      upper1: ma != null && sd != null ? ma + sd : null,
+      lower1: ma != null && sd != null ? ma - sd : null,
+      upper2: ma != null && sd != null ? ma + sd * 2 : null,
+      lower2: ma != null && sd != null ? ma - sd * 2 : null,
+    });
+  }
+
+  return rows.slice(-50);
+}
+
+export default function BBChart({ stock }) {
+  const data = useMemo(() => makeSeries(stock), [stock]);
+
+  if (!data.length) {
+    return <div className="small">차트 데이터가 없습니다.</div>;
+  }
+
+  const allValues = data.flatMap((row) => [row.close, row.ma20, row.upper1, row.lower1, row.upper2, row.lower2].filter((v) => v != null));
+  const min = Math.min(...allValues);
+  const max = Math.max(...allValues);
+  const width = 860;
+  const height = 290;
+  const pad = 24;
+
+  const x = (index) => pad + (index / Math.max(data.length - 1, 1)) * (width - pad * 2);
+  const y = (value) => height - pad - ((value - min) / Math.max(max - min, 0.0001)) * (height - pad * 2);
+
+  function pathFor(key) {
+    return data
+      .map((row, index) => (row[key] == null ? null : `${index === 0 ? 'M' : 'L'} ${x(index)} ${y(row[key])}`))
+      .filter(Boolean)
+      .join(' ');
+  }
 
   return (
-    <div style={{ background:"#ffffff", border:"1px solid #dddddd", borderRadius:10, padding:16, marginBottom:14 }}>
-      <div style={{ fontSize:14, fontWeight:700, color:"#333333", marginBottom:14 }}>
-        📊 이중 볼린저밴드 시각화 — BB1(2표준편차) · BB2(1표준편차)
-      </div>
-
-      {/* 바 시각화 */}
-      <div style={{ position:"relative", height:52, marginBottom:14 }}>
-        {/* BB1 전체 범위 배경 */}
-        <div style={{ position:"absolute", left:0, right:0, top:13, height:26,
-          background:"#ffeeee", border:"1px solid #ffbbbb", borderRadius:5 }}/>
-        {/* BB2 상단 매수구간 강조 */}
-        <div style={{ position:"absolute", left:위치(bb.bb2상단), right:"1%", top:13, height:26,
-          background:"#eeffee", borderLeft:"2px solid #00aa00" }}/>
-        {/* 이동평균선 */}
-        <div style={{ position:"absolute", left:위치(bb.이평선), top:8, width:2, height:36,
-          background:"#886600", borderRadius:2 }}/>
-        {/* BB2 상단 선 */}
-        <div style={{ position:"absolute", left:위치(bb.bb2상단), top:8, width:1, height:36, background:"#00aa00" }}/>
-        {/* BB2 하단 선 */}
-        <div style={{ position:"absolute", left:위치(bb.bb2하단), top:8, width:1, height:36, background:"#cc5500" }}/>
-        {/* 현재가 표시 */}
-        <div style={{ position:"absolute", left:위치(현재가), top:5, transform:"translateX(-50%)" }}>
-          <div style={{ width:14, height:14, borderRadius:"50%", background:"#0055cc",
-            border:"2px solid #003399", marginTop:11 }}/>
-        </div>
-      </div>
-
-      {/* 가격 레이블 */}
-      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:14 }}>
-        {[
-          { 명칭:"BB1 하단", 값:`$${bb.bb1하단}`, 색:"#cc0000" },
-          { 명칭:"BB2 하단", 값:`$${bb.bb2하단}`, 색:"#cc5500" },
-          { 명칭:"이평선",   값:`$${bb.이평선}`,  색:"#886600" },
-          { 명칭:"BB2 상단", 값:`$${bb.bb2상단}`, 색:"#007700" },
-          { 명칭:"BB1 상단", 값:`$${bb.bb1상단}`, 색:"#cc0000" },
-        ].map((x, i) => (
-          <div key={i} style={{ textAlign:"center" }}>
-            <div style={{ fontSize:9, color:x.색, fontWeight:700 }}>{x.명칭}</div>
-            <div style={{ fontSize:10, color:x.색, fontFamily:"'JetBrains Mono',monospace", fontWeight:700 }}>{x.값}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* 구간 설명 */}
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:6, marginBottom:14 }}>
-        {구간목록.map((g, i) => (
-          <div key={i} style={{ background:"#f8f8f8", border:`1px solid #dddddd`,
-            borderLeft:`3px solid ${g.색}`, borderRadius:6, padding:"6px 8px" }}>
-            <div style={{ fontSize:9, color:g.색, fontWeight:700 }}>{g.명칭}</div>
-            <div style={{ fontSize:8, color:"#666666", marginTop:2 }}>{g.설명}</div>
-            {g.참고 && <div style={{ fontSize:8, color:g.색, fontWeight:700 }}>{g.참고}</div>}
-          </div>
-        ))}
-      </div>
-
-      {/* 전략 요약 */}
-      <div style={{ padding:"10px 14px", background:"#f8f9ff", border:"1px solid #ddddff",
-        borderRadius:8, fontSize:12, color:"#333333", lineHeight:1.9 }}>
-        <strong style={{ color:"#003399" }}>이중 볼린저밴드 핵심 전략:</strong><br/>
-        ① <strong style={{ color:"#007700" }}>BB2 상단 ~ BB1 상단 = ★ 최적 매수 구간</strong><br/>
-        ② 밴드폭 6% 미만 수축 = 큰 변동 직전 신호 (매집 완료)<br/>
-        ③ BB1 상단 돌파 후 유지 = 강한 상승 추세 지속<br/>
-        ④ BB2 하단 이탈 = 매도 신호, BB1 하단이 최종 지지선
+    <div style={{ overflowX: 'auto' }}>
+      <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="300" role="img" aria-label="bollinger band chart">
+        <rect x="0" y="0" width={width} height={height} fill="#ffffff" />
+        {[0, 1, 2, 3].map((line) => {
+          const py = pad + ((height - pad * 2) / 3) * line;
+          return <line key={line} x1={pad} x2={width - pad} y1={py} y2={py} stroke="#e4e7ec" strokeWidth="1" />;
+        })}
+        <path d={pathFor('upper2')} fill="none" stroke="#fec84b" strokeWidth="1.5" strokeDasharray="4 4" />
+        <path d={pathFor('upper1')} fill="none" stroke="#f79009" strokeWidth="1.5" />
+        <path d={pathFor('ma20')} fill="none" stroke="#155eef" strokeWidth="2" />
+        <path d={pathFor('lower1')} fill="none" stroke="#12b76a" strokeWidth="1.5" />
+        <path d={pathFor('lower2')} fill="none" stroke="#6ce9a6" strokeWidth="1.5" strokeDasharray="4 4" />
+        <path d={pathFor('close')} fill="none" stroke="#101828" strokeWidth="2.5" />
+      </svg>
+      <div className="legendRow">
+        <span className="legendItem"><i style={{ background: '#101828' }} /> 종가</span>
+        <span className="legendItem"><i style={{ background: '#155eef' }} /> MA20</span>
+        <span className="legendItem"><i style={{ background: '#f79009' }} /> +1σ</span>
+        <span className="legendItem"><i style={{ background: '#12b76a' }} /> -1σ</span>
+        <span className="legendItem"><i style={{ background: '#fec84b' }} /> +2σ</span>
+        <span className="legendItem"><i style={{ background: '#6ce9a6' }} /> -2σ</span>
       </div>
     </div>
   );
