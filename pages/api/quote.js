@@ -1,28 +1,34 @@
-import { demoQuote } from '../../lib/demo';
+import { buildStock } from "../../lib/calc";
+import { demoCandles, demoNews, demoQuote } from "../../lib/demo";
+import { getCandles, getNews, getQuote, isDemoMode } from "../../lib/finnhub";
+import { getCache, setCache } from "../../lib/cache";
 
 export default async function handler(req, res) {
-  const symbol = String(req.query.symbol || '').trim().toUpperCase();
-  if (!symbol) return res.status(400).json({ ok: false, error: 'symbol required' });
-
-  const key = process.env.FINNHUB_API_KEY;
-  const demoMode = process.env.NEXT_PUBLIC_DEMO_MODE === 'true' || !key;
-
-  if (demoMode) {
-    return res.status(200).json({ ok: true, demo: true, data: demoQuote(symbol) });
-  }
+  const symbol = String(req.query.symbol || "").trim().toUpperCase();
+  if (!symbol) return res.status(400).json({ ok: false, error: "symbol이 필요합니다." });
 
   try {
-    const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${key}`;
-    const response = await fetch(url);
-    const data = await response.json();
+    const cached = getCache(`quote:${symbol}`, 15000);
+    if (cached) return res.status(200).json({ ok: true, data: cached, cached: true });
 
-    if (!data || typeof data.c !== 'number' || data.c === 0) {
-      return res.status(404).json({ ok: false, error: 'invalid quote data' });
+    if (isDemoMode() || !process.env.FINNHUB_API_KEY) {
+      const stock = buildStock(symbol, {
+        quote: demoQuote(symbol),
+        candles: demoCandles(symbol),
+        news: demoNews(symbol)
+      });
+      return res.status(200).json({ ok: true, data: setCache(`quote:${symbol}`, stock), demo: true });
     }
 
-    const premarketGapPct = data.pc ? Number((((data.o - data.pc) / data.pc) * 100).toFixed(2)) : 0;
-    return res.status(200).json({ ok: true, data: { ...data, premarketGapPct, v: data.v || 0 } });
-  } catch (error) {
-    return res.status(500).json({ ok: false, error: error.message || 'quote fetch failed' });
+    const [quote, candles, news] = await Promise.all([
+      getQuote(symbol),
+      getCandles(symbol),
+      getNews(symbol)
+    ]);
+
+    const stock = buildStock(symbol, { quote, candles, news });
+    return res.status(200).json({ ok: true, data: setCache(`quote:${symbol}`, stock) });
+  } catch (e) {
+    return res.status(200).json({ ok: false, error: e.message || "시세 조회 실패", hint: "호출 제한 또는 잘못된 티커일 수 있습니다." });
   }
 }

@@ -1,354 +1,404 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import BBChart from '../components/BBChart';
-import { buildStock, filterStocksByPreset } from '../lib/calc';
+import { useEffect, useMemo, useState } from "react";
+import BBChart from "../components/BBChart";
+import { PRESETS } from "../lib/universe";
 
-const DEFAULT_TICKERS = ['SOUN', 'BBAI', 'MARA', 'RIOT', 'QBTS', 'IONQ', 'RGTI', 'KULR', 'PLUG', 'ASTS', 'RKLB', 'CLOV'];
-const REQUEST_GAP = 350;
+const DEFAULT_WATCHLIST = ["SOUN","BBAI","QUBT","RGTI","IONQ","MARA","ASTS","SMR"];
 
-function wait(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function tagStyle(tag) {
+  const colors = {
+    "뉴스": "#2563eb",
+    "거래량": "#7c3aed",
+    "돌파": "#059669",
+    "강돌파": "#dc2626",
+    "수축": "#0f766e",
+    "눌림": "#d97706",
+    "과열": "#b91c1c",
+    "오류": "#6b7280"
+  };
+  const color = colors[tag] || "#374151";
+  return {
+    display: "inline-block",
+    padding: "4px 8px",
+    borderRadius: 999,
+    fontSize: 12,
+    fontWeight: 700,
+    color,
+    background: color + "18",
+    border: `1px solid ${color}35`
+  };
 }
 
-function fmt(value, digits = 2) {
-  if (value == null || Number.isNaN(value)) return '-';
-  return Number(value).toLocaleString('en-US', { maximumFractionDigits: digits });
-}
-
-function badgeColor(tag) {
-  if (tag.includes('강세') || tag.includes('돌파')) return { bg: '#ecfdf3', color: '#067647', bd: '#abefc6' };
-  if (tag.includes('뉴스')) return { bg: '#eef4ff', color: '#155eef', bd: '#cfe0ff' };
-  if (tag.includes('과열')) return { bg: '#fff6ed', color: '#c4320a', bd: '#f9dbaf' };
-  return { bg: '#f8fafc', color: '#344054', bd: '#d0d5dd' };
-}
-
-function StatCard({ title, value, sub, color = '#101828' }) {
+function StatCard({ title, value, sub, color = "#1f2937" }) {
   return (
-    <div className="card statCard" style={{ borderLeft: `4px solid ${color}` }}>
-      <div className="small">{title}</div>
-      <div className="mono statValue" style={{ color }}>{value}</div>
-      {sub ? <div className="small" style={{ marginTop: 6 }}>{sub}</div> : null}
+    <div style={{ background: "#fff", borderRadius: 14, padding: 14, border: "1px solid #e5e7eb", minWidth: 120 }}>
+      <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>{title}</div>
+      <div style={{ fontSize: 22, fontWeight: 800, color }}>{value}</div>
+      {sub ? <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 6 }}>{sub}</div> : null}
+    </div>
+  );
+}
+
+function Row({ item, selected, onSelect, onAdd }) {
+  return (
+    <div
+      onClick={() => onSelect(item)}
+      style={{
+        background: selected ? "#eef6ff" : "#fff",
+        border: selected ? "1px solid #93c5fd" : "1px solid #e5e7eb",
+        borderRadius: 14,
+        padding: 14,
+        display: "grid",
+        gridTemplateColumns: "100px 90px 90px 110px 1fr 90px",
+        gap: 12,
+        alignItems: "center"
+      }}
+    >
+      <div>
+        <div style={{ fontSize: 18, fontWeight: 800 }}>{item.ticker || item.symbol}</div>
+        <div style={{ fontSize: 11, color: "#6b7280" }}>{item.description || "미국 주식"}</div>
+      </div>
+      <div>
+        <div style={{ fontSize: 12, color: "#6b7280" }}>현재가</div>
+        <div style={{ fontWeight: 800 }}>${item.price?.toFixed ? item.price.toFixed(2) : "-"}</div>
+      </div>
+      <div>
+        <div style={{ fontSize: 12, color: "#6b7280" }}>등락률</div>
+        <div style={{ fontWeight: 800, color: item.changePct >= 0 ? "#dc2626" : "#2563eb" }}>
+          {item.changePct?.toFixed ? item.changePct.toFixed(2) : "-"}%
+        </div>
+      </div>
+      <div>
+        <div style={{ fontSize: 12, color: "#6b7280" }}>점수 / RVOL</div>
+        <div style={{ fontWeight: 800 }}>{item.score ?? "-"} / {item.rvol ?? "-"}</div>
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {(item.tags || []).slice(0, 5).map((tag) => <span key={tag} style={tagStyle(tag)}>{tag}</span>)}
+      </div>
+      <div style={{ textAlign: "right" }}>
+        {onAdd ? (
+          <button
+            onClick={(e) => { e.stopPropagation(); onAdd(item.symbol || item.ticker); }}
+            style={{ background: "#111827", color: "#fff", border: 0, borderRadius: 10, padding: "10px 12px", fontWeight: 700 }}
+          >
+            추가
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }
 
 export default function Home() {
-  const [watchlist, setWatchlist] = useState(DEFAULT_TICKERS);
-  const [stocks, setStocks] = useState([]);
+  const [watchlist, setWatchlist] = useState(DEFAULT_WATCHLIST);
+  const [results, setResults] = useState([]);
   const [selected, setSelected] = useState(null);
-  const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState('대기 중');
-  const [preset, setPreset] = useState('all');
+  const [preset, setPreset] = useState("전체 후보");
+  const [searchInput, setSearchInput] = useState("");
+  const [searchItems, setSearchItems] = useState([]);
+  const [loadingScan, setLoadingScan] = useState(false);
+  const [loadingSearch, setLoadingSearch] = useState(false);
+  const [message, setMessage] = useState("");
+  const [analysis, setAnalysis] = useState("");
   const [live, setLive] = useState(false);
-  const [minScore, setMinScore] = useState(0);
-  const [aiText, setAiText] = useState('');
-  const [aiLoading, setAiLoading] = useState(false);
-  const liveRef = useRef(null);
+  const [minScore, setMinScore] = useState(35);
+  const [priceMin, setPriceMin] = useState(0.5);
+  const [priceMax, setPriceMax] = useState(30);
+  const [newsOnly, setNewsOnly] = useState(false);
+  const [breakoutOnly, setBreakoutOnly] = useState(false);
+  const [pullbackOnly, setPullbackOnly] = useState(false);
+  const [maxSymbols, setMaxSymbols] = useState(8);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const saved = localStorage.getItem('centro-watchlist-v14');
-    if (!saved) return;
-    try {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed) && parsed.length) setWatchlist(parsed);
-    } catch {
-      // ignore broken storage
+    const saved = typeof window !== "undefined" ? localStorage.getItem("centroWatchlistV2") : "";
+    if (saved) {
+      try { setWatchlist(JSON.parse(saved)); } catch {}
     }
+    runScan();
   }, []);
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('centro-watchlist-v14', JSON.stringify(watchlist));
+    if (typeof window !== "undefined") {
+      localStorage.setItem("centroWatchlistV2", JSON.stringify(watchlist));
     }
   }, [watchlist]);
 
-  async function fetchJson(url, options) {
-    const response = await fetch(url, options);
-    const json = await response.json();
-    if (!json.ok) throw new Error(json.error || '요청 실패');
-    return json.data ?? json;
-  }
-
-  async function scan() {
-    setLoading(true);
-    setStatus('스캔 시작');
-    setAiText('');
-    const next = [];
-
-    for (let i = 0; i < watchlist.length; i += 1) {
-      const ticker = watchlist[i];
-      setStatus(`스캔 중 ${i + 1}/${watchlist.length} - ${ticker}`);
-      try {
-        const [quote, candles, news] = await Promise.all([
-          fetchJson(`/api/quote?symbol=${ticker}`),
-          fetchJson(`/api/candles?symbol=${ticker}`),
-          fetchJson(`/api/news?symbol=${ticker}`),
-        ]);
-        const stock = buildStock(ticker, quote, candles, news);
-        next.push(stock);
-      } catch (error) {
-        console.error(ticker, error);
-      }
-      await wait(REQUEST_GAP);
-    }
-
-    const sorted = next.sort((a, b) => b.score - a.score);
-    setStocks(sorted);
-    setSelected((prev) => sorted.find((item) => item.ticker === prev?.ticker) || sorted[0] || null);
-    setStatus(`완료 - ${sorted.length}개 종목 분석`);
-    setLoading(false);
-  }
-
   useEffect(() => {
-    scan();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    if (!live || !selected?.ticker) {
-      if (liveRef.current) clearInterval(liveRef.current);
-      return undefined;
-    }
-
-    liveRef.current = setInterval(async () => {
-      try {
-        const quote = await fetchJson(`/api/quote?symbol=${selected.ticker}`);
-        const updated = buildStock(selected.ticker, quote, selected.candles || [], selected.news || []);
-        setStocks((prev) => prev.map((row) => (row.ticker === updated.ticker ? { ...row, ...updated, candles: row.candles, news: row.news } : row)).sort((a, b) => b.score - a.score));
-        setSelected((prev) => (prev?.ticker === updated.ticker ? { ...prev, ...updated, candles: prev.candles, news: prev.news } : prev));
-      } catch (error) {
-        console.error(error);
+    if (!live || !selected?.ticker) return;
+    const timer = setInterval(async () => {
+      const res = await fetch(`/api/quote?symbol=${selected.ticker}`);
+      const json = await res.json();
+      if (json.ok && json.data) {
+        setSelected(json.data);
+        setResults((prev) => prev.map((x) => x.ticker === json.data.ticker ? json.data : x));
       }
     }, 15000);
+    return () => clearInterval(timer);
+  }, [live, selected?.ticker]);
 
-    return () => clearInterval(liveRef.current);
-  }, [live, selected]);
-
-  async function addTicker() {
-    const ticker = input.trim().toUpperCase();
-    if (!ticker) return;
-    if (watchlist.includes(ticker)) {
-      setInput('');
-      return;
-    }
-    setWatchlist((prev) => [...prev, ticker]);
-    setInput('');
-  }
-
-  function removeTicker(ticker) {
-    setWatchlist((prev) => prev.filter((item) => item !== ticker));
-    setStocks((prev) => prev.filter((item) => item.ticker !== ticker));
-    if (selected?.ticker === ticker) setSelected(null);
-  }
-
-  async function runAI() {
-    if (!selected) return;
-    setAiLoading(true);
-    setAiText('');
+  async function runScan(customSymbols = []) {
     try {
-      const response = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stock: selected }),
+      setLoadingScan(true);
+      setMessage("후보군 스캔 중...");
+      const qs = new URLSearchParams({
+        preset,
+        minScore: String(minScore),
+        priceMin: String(priceMin),
+        priceMax: String(priceMax),
+        newsOnly: String(newsOnly),
+        breakoutOnly: String(breakoutOnly),
+        pullbackOnly: String(pullbackOnly),
+        maxSymbols: String(maxSymbols)
       });
-      const json = await response.json();
-      if (!json.ok) throw new Error(json.error || 'AI 분석 실패');
-      setAiText(json.analysis);
-    } catch (error) {
-      setAiText(error.message || 'AI 분석 실패');
+      if (customSymbols.length) qs.set("symbols", customSymbols.join(","));
+      const res = await fetch(`/api/scan?${qs.toString()}`);
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error || "스캔 실패");
+      setResults(json.items || []);
+      setSelected((prev) => (json.items || []).find((x) => x.ticker === prev?.ticker) || (json.items || [])[0] || null);
+      setMessage(`스캔 완료: ${json.count}개 (조회 ${json.scanned || 0}종목${json.cached ? ", 캐시 사용" : ""})`);
+    } catch (e) {
+      setMessage(e.message || "스캔 실패");
+      setResults([]);
     } finally {
-      setAiLoading(false);
+      setLoadingScan(false);
     }
   }
 
-  const filteredStocks = useMemo(() => {
-    return filterStocksByPreset(stocks, preset).filter((item) => item.score >= minScore);
-  }, [stocks, preset, minScore]);
+  async function searchTicker() {
+    try {
+      setLoadingSearch(true);
+      setMessage("검색 중...");
+      setAnalysis("");
+      const res = await fetch(`/api/search?q=${encodeURIComponent(searchInput)}`);
+      const json = await res.json();
+      setSearchItems(json.items || []);
+      setMessage(json.items?.length ? `검색 결과 ${json.items.length}개` : "검색 결과가 없습니다.");
+    } catch (e) {
+      setMessage(e.message || "검색 실패");
+      setSearchItems([]);
+    } finally {
+      setLoadingSearch(false);
+    }
+  }
 
-  const summary = useMemo(() => {
-    const base = filteredStocks;
-    return {
-      count: base.length,
-      avgScore: base.length ? Math.round(base.reduce((sum, item) => sum + item.score, 0) / base.length) : 0,
-      strongestGap: base.length ? Math.max(...base.map((item) => item.premarketGapPct || 0)) : 0,
-      strongestRv: base.length ? Math.max(...base.map((item) => item.rv || 0)) : 0,
-    };
-  }, [filteredStocks]);
+  async function addTicker(symbol) {
+    const ticker = String(symbol || "").trim().toUpperCase();
+    if (!ticker) return;
+    if (!watchlist.includes(ticker)) setWatchlist((prev) => [...prev, ticker]);
+    const res = await fetch(`/api/quote?symbol=${ticker}`);
+    const json = await res.json();
+    if (json.ok && json.data) {
+      setSelected(json.data);
+      setResults((prev) => {
+        const exists = prev.some((x) => x.ticker === ticker);
+        const next = exists ? prev.map((x) => x.ticker === ticker ? json.data : x) : [json.data, ...prev];
+        return next.sort((a, b) => b.score - a.score);
+      });
+      setMessage(`${ticker} 추가 완료`);
+    } else {
+      setMessage(json.error || "종목 추가 실패");
+    }
+  }
+
+
+  function removeTicker(symbol) {
+    const ticker = String(symbol || "").trim().toUpperCase();
+    setWatchlist((prev) => prev.filter((x) => x !== ticker));
+    setMessage(`${ticker} 워치리스트 제거`);
+  }
+
+  async function runAnalysis() {
+    if (!selected) return;
+    setAnalysis("분석 중...");
+    const res = await fetch("/api/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stock: selected })
+    });
+    const json = await res.json();
+    setAnalysis(json.ok ? json.text : (json.error || "분석 실패"));
+  }
+
+  const watchlistView = useMemo(() => watchlist.slice(0, 12).join(", ") + (watchlist.length > 12 ? " ..." : ""), [watchlist]);
 
   return (
-    <div className="container">
-      <div className="card heroCard">
-        <div className="heroTop">
-          <div>
-            <div className="title">📈 Centro Pro v1.4</div>
-            <div className="subtitle">프리마켓 전용 화면 + 개장초 돌파 + 눌림목 + 뉴스 촉매 중심의 실전형 나스닥 급등주 스크리너</div>
-          </div>
-          <div className="buttonRow">
-            <button className="primary" onClick={scan} disabled={loading}>{loading ? '스캔 중...' : '전체 스캔'}</button>
-            <button className={live ? 'success' : ''} onClick={() => setLive((v) => !v)}>{live ? '📡 LIVE ON' : '📡 LIVE OFF'}</button>
-            {selected ? (
-              <a href={`https://www.tradingview.com/symbols/NASDAQ-${selected.ticker}/`} target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}>
-                <button>📊 TradingView</button>
-              </a>
-            ) : null}
-          </div>
+    <div style={{ maxWidth: 1500, margin: "0 auto", padding: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
+        <div>
+          <div style={{ fontSize: 30, fontWeight: 900 }}>📈 Centro Pro v2.0 나스닥 급등주 스크리너</div>
+          <div style={{ marginTop: 8, color: "#6b7280" }}>검색 + 자동 후보 발굴 + 워치리스트 + 실전 전략 카드</div>
         </div>
-
-        <div className="controlRow">
-          <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="티커 추가 예: QUBT" />
-          <button onClick={addTicker}>추가</button>
-          <button onClick={() => setWatchlist(DEFAULT_TICKERS)}>기본 복원</button>
-          <select value={preset} onChange={(e) => setPreset(e.target.value)}>
-            <option value="all">전체 보기</option>
-            <option value="premarket">프리마켓 강세</option>
-            <option value="breakout">개장초 돌파</option>
-            <option value="pullback">눌림목 반등</option>
-            <option value="news">뉴스 촉매 우선</option>
-          </select>
-          <label className="rangeWrap">
-            최소 점수 {minScore}
-            <input type="range" min="0" max="80" step="5" value={minScore} onChange={(e) => setMinScore(Number(e.target.value))} />
-          </label>
-          <span className="badge">상태: {status}</span>
-        </div>
-
-        <div className="grid fourCols" style={{ marginTop: 14 }}>
-          <StatCard title="필터 결과" value={`${summary.count}개`} color="#155eef" />
-          <StatCard title="평균 점수" value={`${summary.avgScore}`} color="#7a5af8" />
-          <StatCard title="최대 프리마켓 갭" value={`${fmt(summary.strongestGap)}%`} color="#067647" />
-          <StatCard title="최대 거래량 배수" value={`${fmt(summary.strongestRv)}x`} color="#c11574" />
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <a
+            href={selected?.ticker ? `https://www.tradingview.com/symbols/NASDAQ-${selected.ticker}/` : "https://www.tradingview.com/"}
+            target="_blank"
+            rel="noreferrer"
+            style={{ background: "#1d4ed8", color: "#fff", padding: "12px 14px", borderRadius: 12, fontWeight: 800 }}
+          >
+            TradingView 열기
+          </a>
+          <button
+            onClick={() => setLive((v) => !v)}
+            style={{ background: live ? "#065f46" : "#111827", color: "#fff", padding: "12px 14px", borderRadius: 12, fontWeight: 800, border: 0 }}
+          >
+            {live ? "LIVE ON" : "LIVE OFF"}
+          </button>
         </div>
       </div>
 
-      <div className="grid mainGrid">
-        <div className="card leftPanel">
-          <div className="panelHeader">실전 후보 압축</div>
-          <div className="watchPills">
-            {watchlist.map((ticker) => (
-              <span key={ticker} className="watchPill">
-                {ticker}
-                <button onClick={() => removeTicker(ticker)} aria-label={`${ticker} 삭제`}>×</button>
-              </span>
+      <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 18, padding: 16, marginBottom: 18 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr 1fr 1fr 1fr 1fr auto", gap: 10, alignItems: "end" }}>
+          <div>
+            <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>티커 검색</div>
+            <input
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && searchTicker()}
+              placeholder="예: QUBT, RGTI, SOUN"
+              style={{ width: "100%", padding: 12, borderRadius: 12, border: "1px solid #d1d5db" }}
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>프리셋</div>
+            <select value={preset} onChange={(e) => setPreset(e.target.value)} style={{ width: "100%", padding: 12, borderRadius: 12, border: "1px solid #d1d5db" }}>
+              {Object.keys(PRESETS).map((k) => <option key={k}>{k}</option>)}
+            </select>
+          </div>
+          <div>
+            <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>최소 점수</div>
+            <input type="number" value={minScore} onChange={(e) => setMinScore(Number(e.target.value))} style={{ width: "100%", padding: 12, borderRadius: 12, border: "1px solid #d1d5db" }} />
+          </div>
+          <div>
+            <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>최소 가격</div>
+            <input type="number" step="0.1" value={priceMin} onChange={(e) => setPriceMin(Number(e.target.value))} style={{ width: "100%", padding: 12, borderRadius: 12, border: "1px solid #d1d5db" }} />
+          </div>
+          <div>
+            <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>최대 가격</div>
+            <input type="number" step="0.1" value={priceMax} onChange={(e) => setPriceMax(Number(e.target.value))} style={{ width: "100%", padding: 12, borderRadius: 12, border: "1px solid #d1d5db" }} />
+          </div>
+          <div>
+            <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>스캔 개수</div>
+            <input type="number" min="1" max="8" value={maxSymbols} onChange={(e) => setMaxSymbols(Number(e.target.value || 8))} style={{ width: "100%", padding: 12, borderRadius: 12, border: "1px solid #d1d5db" }} />
+          </div>
+          <div style={{ display: "flex", gap: 8, flexDirection: "column", justifyContent: "center", paddingBottom: 6 }}>
+            <label style={{ fontSize: 12 }}><input type="checkbox" checked={newsOnly} onChange={(e) => setNewsOnly(e.target.checked)} /> 뉴스만</label>
+            <label style={{ fontSize: 12 }}><input type="checkbox" checked={breakoutOnly} onChange={(e) => setBreakoutOnly(e.target.checked)} /> 돌파만</label>
+            <label style={{ fontSize: 12 }}><input type="checkbox" checked={pullbackOnly} onChange={(e) => setPullbackOnly(e.target.checked)} /> 눌림만</label>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button onClick={searchTicker} style={{ background: "#111827", color: "#fff", border: 0, borderRadius: 12, padding: "12px 16px", fontWeight: 800 }}>
+              {loadingSearch ? "검색중" : "검색"}
+            </button>
+            <button onClick={() => runScan()} style={{ background: "#dc2626", color: "#fff", border: 0, borderRadius: 12, padding: "12px 16px", fontWeight: 800 }}>
+              {loadingScan ? "스캔중" : "자동 스캔"}
+            </button>
+            <button onClick={() => runScan(watchlist)} style={{ background: "#2563eb", color: "#fff", border: 0, borderRadius: 12, padding: "12px 16px", fontWeight: 800 }}>
+              워치리스트 스캔
+            </button>
+          </div>
+        </div>
+        <div style={{ marginTop: 12, fontSize: 13, color: "#6b7280" }}>{message}</div>
+      </div>
+
+      {!!searchItems.length && (
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontWeight: 800, marginBottom: 10 }}>검색 결과</div>
+          <div style={{ display: "grid", gap: 10 }}>
+            {searchItems.map((item) => (
+              <Row key={item.symbol} item={item} onSelect={() => addTicker(item.symbol)} onAdd={addTicker} />
             ))}
           </div>
+        </div>
+      )}
 
-          <div className="tableWrap">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>티커</th>
-                  <th>점수</th>
-                  <th>갭</th>
-                  <th>RVOL</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredStocks.map((stock) => (
-                  <tr key={stock.ticker} onClick={() => { setSelected(stock); setAiText(''); }} className={selected?.ticker === stock.ticker ? 'activeRow' : ''}>
-                    <td>
-                      <div className="tickerName">{stock.ticker}</div>
-                      <div className="small">{fmt(stock.changePct)}%</div>
-                    </td>
-                    <td className="mono">{stock.score}</td>
-                    <td className="mono">{fmt(stock.premarketGapPct)}%</td>
-                    <td className="mono">{fmt(stock.rv)}x</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+
+      <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 18, padding: 16, marginBottom: 18 }}>
+        <div style={{ fontWeight: 800, marginBottom: 10 }}>워치리스트 관리</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {watchlist.map((ticker) => (
+            <span key={ticker} style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "#f3f4f6", borderRadius: 999, border: "1px solid #e5e7eb", fontSize: 13, fontWeight: 700 }}>
+              {ticker}
+              <button onClick={() => removeTicker(ticker)} style={{ border: 0, background: "transparent", color: "#dc2626", fontWeight: 900 }}>×</button>
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1.05fr 0.95fr", gap: 18 }}>
+        <div style={{ display: "grid", gap: 18 }}>
+          <div>
+            <div style={{ fontWeight: 800, marginBottom: 10 }}>스캔 결과</div>
+            <div style={{ display: "grid", gap: 10 }}>
+              {results.map((item) => (
+                <Row key={item.ticker} item={item} selected={selected?.ticker === item.ticker} onSelect={setSelected} />
+              ))}
+            </div>
           </div>
         </div>
 
-        <div className="rightPanel">
-          {selected ? (
-            <>
-              <div className="card detailCard">
-                <div className="detailTop">
-                  <div>
-                    <div className="detailTicker">{selected.ticker}</div>
-                    <div className="small">실전 우선순위 점수 {selected.score} / 100</div>
-                  </div>
-                  <div className="tagRow">
-                    {selected.tags.map((tag) => {
-                      const color = badgeColor(tag);
-                      return <span key={tag} className="badge" style={{ background: color.bg, color: color.color, borderColor: color.bd }}>{tag}</span>;
-                    })}
-                  </div>
-                </div>
-
-                <div className="grid fourCols" style={{ marginTop: 16 }}>
-                  <StatCard title="현재가" value={`$${fmt(selected.price)}`} color="#155eef" />
-                  <StatCard title="등락률" value={`${fmt(selected.changePct)}%`} color={selected.changePct >= 0 ? '#067647' : '#b42318'} />
-                  <StatCard title="프리마켓 갭" value={`${fmt(selected.premarketGapPct)}%`} color="#0f8f43" />
-                  <StatCard title="거래량 배수" value={`${fmt(selected.rv)}x`} color="#7a5af8" />
-                </div>
+        <div style={{ display: "grid", gap: 18 }}>
+          <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 18, padding: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 14 }}>
+              <div>
+                <div style={{ fontSize: 24, fontWeight: 900 }}>{selected?.ticker || "선택 없음"}</div>
+                <div style={{ fontSize: 13, color: "#6b7280" }}>워치리스트: {watchlistView}</div>
               </div>
+              {selected ? (
+                <button onClick={runAnalysis} style={{ background: "#111827", color: "#fff", border: 0, borderRadius: 12, padding: "12px 16px", fontWeight: 800 }}>
+                  AI/규칙 분석
+                </button>
+              ) : null}
+            </div>
 
-              <div className="grid fourCols">
-                <StatCard title="진입가" value={`$${fmt(selected.entry)}`} sub="돌파 확인 후 접근" color="#155eef" />
-                <StatCard title="손절가" value={`$${fmt(selected.stop)}`} sub="무너지면 빠르게 정리" color="#d92d20" />
-                <StatCard title="1차 목표" value={`$${fmt(selected.target1)}`} sub="부분 익절" color="#0f8f43" />
-                <StatCard title="2차 목표" value={`$${fmt(selected.target2)}`} sub="추세 연장" color="#7a5af8" />
-              </div>
-
-              <div className="grid twoCols">
-                <div className="card" style={{ padding: 16 }}>
-                  <div className="panelHeader" style={{ padding: 0, borderBottom: 'none', marginBottom: 10 }}>프리마켓/개장초 체크</div>
-                  <div className="grid twoCols">
-                    <StatCard title="시가" value={`$${fmt(selected.open)}`} />
-                    <StatCard title="전일종가" value={`$${fmt(selected.prevClose)}`} />
-                    <StatCard title="당일 변동폭" value={`${fmt(selected.rangePct)}%`} />
-                    <StatCard title="R:R" value={`${fmt(selected.rr)} : 1`} />
-                  </div>
+            {selected ? (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+                  <StatCard title="현재가" value={`$${selected.price.toFixed(2)}`} color="#111827" />
+                  <StatCard title="등락률" value={`${selected.changePct.toFixed(2)}%`} color={selected.changePct >= 0 ? "#dc2626" : "#2563eb"} />
+                  <StatCard title="점수" value={selected.score} sub={`RVOL ${selected.rvol}`} color="#7c3aed" />
+                  <StatCard title="R:R" value={selected.rr} sub={`RSI ${selected.rsi14}`} color="#059669" />
                 </div>
-                <div className="card" style={{ padding: 16 }}>
-                  <div className="panelHeader" style={{ padding: 0, borderBottom: 'none', marginBottom: 10 }}>핵심 지표</div>
-                  <div className="grid twoCols">
-                    <StatCard title="MA9" value={selected.ma9 ? `$${fmt(selected.ma9)}` : '-'} />
-                    <StatCard title="MA20" value={selected.ma20 ? `$${fmt(selected.ma20)}` : '-'} />
-                    <StatCard title="MA50" value={selected.ma50 ? `$${fmt(selected.ma50)}` : '-'} />
-                    <StatCard title="RSI" value={fmt(selected.rsi)} />
-                  </div>
-                </div>
-              </div>
 
-              <div className="card" style={{ padding: 16 }}>
-                <div className="panelHeader" style={{ padding: 0, borderBottom: 'none', marginBottom: 10 }}>이중 볼린저밴드 차트</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+                  <StatCard title="진입가" value={`$${selected.entry}`} color="#111827" />
+                  <StatCard title="손절가" value={`$${selected.stop}`} color="#2563eb" />
+                  <StatCard title="1차 목표" value={`$${selected.target1}`} color="#d97706" />
+                  <StatCard title="2차 목표" value={`$${selected.target2}`} color="#dc2626" />
+                </div>
+
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+                  {selected.tags.map((tag) => <span key={tag} style={tagStyle(tag)}>{tag}</span>)}
+                </div>
+
                 <BBChart stock={selected} />
-              </div>
 
-              <div className="grid twoCols">
-                <div className="card" style={{ padding: 16 }}>
-                  <div className="panelHeader" style={{ padding: 0, borderBottom: 'none', marginBottom: 10 }}>리스크 체크</div>
-                  {selected.risk.length ? selected.risk.map((item) => (
-                    <div key={item} className="bulletRow">• {item}</div>
-                  )) : <div className="small">현재 뚜렷한 경고 신호는 제한적입니다.</div>}
+                <div style={{ marginTop: 16, background: "#f9fafb", borderRadius: 14, padding: 14, border: "1px solid #e5e7eb" }}>
+                  <div style={{ fontWeight: 800, marginBottom: 8 }}>전략 메모</div>
+                  <div style={{ fontSize: 14, lineHeight: 1.65, color: "#374151" }}>
+                    {analysis || "분석 버튼을 누르면 현재 종목에 대한 규칙 기반 전략 메모가 생성됩니다."}
+                  </div>
                 </div>
-                <div className="card" style={{ padding: 16 }}>
-                  <div className="panelHeader" style={{ padding: 0, borderBottom: 'none', marginBottom: 10 }}>최근 뉴스 촉매</div>
-                  {selected.news?.length ? selected.news.map((item) => (
-                    <a key={item.id || item.url} href={item.url} target="_blank" rel="noreferrer" className="newsLink">
-                      <div className="newsRow">
-                        <div className="newsTitle">{item.headline}</div>
-                        <div className="small" style={{ marginTop: 4 }}>{item.source} · {new Date((item.datetime || 0) * 1000).toLocaleString('ko-KR')}</div>
-                      </div>
-                    </a>
-                  )) : <div className="small">최근 뉴스가 없습니다.</div>}
-                </div>
-              </div>
 
-              <div className="card" style={{ padding: 16 }}>
-                <div className="detailTop" style={{ marginBottom: 10 }}>
-                  <div className="panelHeader" style={{ padding: 0, borderBottom: 'none' }}>AI / 규칙 기반 해석</div>
-                  <button onClick={runAI} disabled={aiLoading}>{aiLoading ? '분석 중...' : '전략 생성'}</button>
+                <div style={{ marginTop: 16, background: "#fff", borderRadius: 14, padding: 14, border: "1px solid #e5e7eb" }}>
+                  <div style={{ fontWeight: 800, marginBottom: 8 }}>최근 뉴스</div>
+                  {selected.news?.length ? (
+                    <div style={{ display: "grid", gap: 10 }}>
+                      {selected.news.map((n, idx) => (
+                        <a key={idx} href={n.url} target="_blank" rel="noreferrer" style={{ padding: 12, borderRadius: 10, border: "1px solid #e5e7eb", background: "#fafafa" }}>
+                          <div style={{ fontWeight: 700 }}>{n.headline}</div>
+                          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>{n.source}</div>
+                        </a>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 14, color: "#6b7280" }}>최근 뉴스가 없습니다.</div>
+                  )}
                 </div>
-                <div className="analysisBox">{aiText || '전략 생성 버튼을 누르면 종목별 실전 요약이 생성됩니다.'}</div>
-              </div>
-            </>
-          ) : (
-            <div className="card" style={{ padding: 16 }}>종목을 선택하세요.</div>
-          )}
+              </>
+            ) : (
+              <div style={{ fontSize: 14, color: "#6b7280" }}>왼쪽에서 종목을 선택하세요.</div>
+            )}
+          </div>
         </div>
       </div>
     </div>
