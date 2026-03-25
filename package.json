@@ -1,6 +1,6 @@
 {
   "name": "nasdaq-screener",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -9,8 +9,8 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "next": "14.2.29",
-    "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "next": "14.2.35",
+    "react": "18.2.0",
+    "react-dom": "18.2.0"
   }
 }
